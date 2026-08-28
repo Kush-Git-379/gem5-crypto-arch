@@ -1,0 +1,23 @@
+# Build output
+*.o
+*.a
+*.so
+*.exe
+workloads/bin/
+
+# gem5 raw output — keep curated results/, not every m5out dump
+m5out/
+**/m5out/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
