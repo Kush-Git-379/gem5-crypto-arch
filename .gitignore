@@ -21,3 +21,6 @@ venv/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Results kept as curated CSV/figures; raw dirs are added deliberately
+results/raw/*/run.log

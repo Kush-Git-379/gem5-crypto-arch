@@ -1,0 +1,10 @@
+# The VM builds and runs this project. Shell scripts and Makefiles MUST have
+# LF endings in the working tree there — CRLF makes bash fail with
+# "bad interpreter: /usr/bin/env bash^M" and make fail on trailing \r.
+* text=auto eol=lf
+*.sh   text eol=lf
+Makefile text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
