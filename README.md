@@ -1,11 +1,13 @@
 # Microarchitectural Analysis of Lightweight Cryptography
 
-Why is ASCON-128 dramatically faster than software AES-128 on general-purpose
-hardware — and what does the answer say about processor design for IoT and edge
-workloads?
+Where does ASCON-128's throughput advantage over software AES-128 actually come
+from at the microarchitectural level — and what does the answer say about
+processor design for IoT and edge workloads?
 
-**Status: in progress.** Results below are placeholders until measured.
-No number appears here that did not come from a run in `results/`.
+**Status: in progress.** Workloads and tooling are built and the cipher
+implementations pass their published test vectors; no gem5 measurements have
+been taken yet. No number appears here that did not come from a run in
+`results/`.
 
 ---
 
@@ -22,6 +24,23 @@ capacity."
 Neither established the mechanism. The first measured *that* ASCON wins; the
 second ruled out one explanation without supplying another. This project looks
 for the actual cause in the microarchitecture.
+
+### What this project does and does not explain
+
+**It does not decompose the 78×.** That figure compared ASCON-128 against
+AES-**GCM** — which adds GHASH authentication on top of the block cipher — and
+was measured through Python `ctypes` bindings, so call overhead is folded into
+it. It is not a clean cipher-versus-cipher number.
+
+This project asks a narrower and better-posed question: given two ciphers
+compiled the same way, run on the same simulated core, in the same mode, with
+setup and teardown excluded — where does the remaining gap come from? The
+answer is a mechanism, not a speedup multiplier.
+
+For calibration, the three workloads here differ by far less than 78× (see
+[`docs/FINDINGS.md`](docs/FINDINGS.md)). That is expected, and it is the point:
+a modest, honestly-measured gap with an identified cause is worth more than a
+large one whose cause is unknown.
 
 ## Hypothesis
 
@@ -49,6 +68,19 @@ The out-of-order model matters: the earlier study used `TimingSimpleCPU`, which
 has no pipeline model and therefore cannot support any claim about
 instruction-level parallelism.
 
+**Controlling the comparison.** The workloads share one harness: identical
+buffers, identical deterministic PRNG, identical fixed key and nonce, and
+`m5_reset_stats`/`m5_dump_stats` markers so process startup and teardown fall
+outside the measured region. AES and DES both run in **CTR mode**, and ASCON in
+its native AEAD mode, so all three are keystream-style stream processing rather
+than one being handicapped by a mode the others do not pay for. AES-GCM is
+deliberately *not* used: its GHASH step would measure authentication arithmetic,
+not the S-box behaviour the hypothesis is about.
+
+All three are verified against published test vectors (ASCON KAT, AES FIPS-197,
+DES known-answer) before any performance number is taken — `make check` in
+`workloads/`.
+
 | | Experiment | Question |
 |---|---|---|
 | **E1** | Baseline profile | IPC, instruction mix, miss rates, branch behaviour, stall attribution |
@@ -62,17 +94,52 @@ _Pending._
 ## Repository
 
 ```
-reference/   ASCON-128 implementation (self-contained C)
-workloads/   Benchmark sources and build
-configs/     gem5 configuration scripts
-scripts/     Sweep drivers, stats parsing, plotting
+reference/   Original Jan 2026 ASCON-128 implementation, kept as-is
+workloads/   ascon.c, aes.c, des.c, shared harness.h, selftest.c, Makefile
+configs/     o3_crypto.py — parameterised DerivO3CPU config
+scripts/     run_sweep.sh, parse_stats.py, plot_results.py
 results/     Raw stats.txt, parsed CSVs, figures
-docs/        Findings log and final report
+docs/        VM-SETUP.md, FINDINGS.md, REPORT.md
 ```
+
+A note on `reference/ascon.c`: it is preserved unmodified as the artifact of the
+earlier project. `workloads/ascon.c` derives from it but corrects a round-constant
+bug that made the 6-round permutation use the 12-round constants — see the header
+comment there and the 2026-08-29 entry in [`docs/FINDINGS.md`](docs/FINDINGS.md).
+The fix is microarchitecturally neutral; it does not change the instruction mix.
 
 ## Build and run
 
-_To be documented once the harness is working._
+Requires gem5 v25.1 built for X86 and its `m5` utility library. Full setup,
+including the host↔VM workflow, is in [`docs/VM-SETUP.md`](docs/VM-SETUP.md).
+
+```bash
+export GEM5_ROOT=$HOME/gem5
+
+# Build gem5's m5 op library once
+cd $GEM5_ROOT/util/m5 && scons build/x86/out/m5
+
+# Verify the ciphers, then build the static gem5 binaries
+cd workloads
+make check                      # known-answer tests — must pass first
+make M5_PATH=$GEM5_ROOT
+
+# Confirm no hardware AES crept in; must print 0
+objdump -d bin/aes.gem5 | grep -ci aesenc
+
+# Size the sweeps before launching them — O3 in a VM is slow
+cd ..
+./scripts/run_sweep.sh calibrate
+./scripts/run_sweep.sh e1       # then e2, e3
+
+# Parse and plot
+python3 scripts/parse_stats.py results/raw -o results/parsed.csv
+python3 scripts/plot_results.py results/parsed.csv -o results/figures
+```
+
+`N_BLOCKS` defaults to 1000 and is overridable (`make N_BLOCKS=500`). The sweep
+driver skips runs that already have a `stats.txt`, so an interrupted sweep
+resumes rather than restarting.
 
 ---
 
