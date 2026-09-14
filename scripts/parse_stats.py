@@ -158,8 +158,9 @@ def lookup(section, candidates, known_keys=None):
     gem5 25.1 omits a scalar stat from a dump section entirely when its
     value is exactly 0 for that interval (SQFullEvents in an ROI section
     with no SQ stalls, for example), rather than printing "0". If a
-    candidate key is absent here but is a real, registered stat elsewhere
-    in the same stats.txt (known_keys), that means genuinely zero for this
+    candidate key is absent here but is a real, registered stat somewhere
+    in the batch (known_keys — pooled across every run's stats.txt, not
+    just this one; see main()), that means genuinely zero for this
     section, not "stat doesn't exist in this gem5 build" — return "0"
     instead of leaving it blank so a real zero isn't mistaken for missing
     data.
@@ -220,8 +221,20 @@ def main():
     ap.add_argument("-o", "--output", default="results/parsed.csv")
     args = ap.parse_args()
 
-    rows = []
-
+    # First pass: read every stats.txt and record which stat keys exist
+    # anywhere in the whole batch. A key can be legitimately absent from one
+    # run's sections yet zero (gem5 25.1 omits zero-valued scalars) rather
+    # than "doesn't exist in this build" — e.g. system.cpu.rename.IQFullEvents
+    # is entirely missing at issue-width 1 but present at width 2/4/8 for the
+    # very same binary/config. Scoping known-keys to a single file therefore
+    # under-detects: it still leaves a real zero blank whenever a stat
+    # happens to be absent from *every* section of that one run. Pooling
+    # known keys across the whole batch (same gem5 build, same experiment)
+    # fixes that without risking a false zero for a stat that never exists
+    # in this gem5 version at all — such a stat won't appear in ANY run's
+    # sections, so it stays correctly blank.
+    parsed_files = []
+    global_known_keys = set()
     for entry in sorted(os.listdir(args.root)):
         rundir = os.path.join(args.root, entry)
         stats = os.path.join(rundir, "stats.txt")
@@ -237,10 +250,14 @@ def main():
             print(f"  SKIP: {e}", file=sys.stderr)
             continue
 
-        exp, workload, param = parse_dirname(entry)
-        known_keys = set()
         for s in sections:
-            known_keys.update(s.keys())
+            global_known_keys.update(s.keys())
+        parsed_files.append((entry, section, sections, roi_ok))
+
+    rows = []
+
+    for entry, section, sections, roi_ok in parsed_files:
+        exp, workload, param = parse_dirname(entry)
 
         row = {
             "run": entry,
@@ -251,7 +268,7 @@ def main():
             "n_sections": len(sections),
         }
         for col, candidates in WANTED.items():
-            row[col] = lookup(section, candidates, known_keys)
+            row[col] = lookup(section, candidates, global_known_keys)
 
         rows.append(derive(row))
         print(f"  parsed {entry}  (sections={len(sections)}, roi={row['roi_markers']})")

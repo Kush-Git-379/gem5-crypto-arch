@@ -404,3 +404,70 @@ experiment phase is done. Remaining work: `scripts/plot_results.py` figures,
 `docs/REPORT.md` draft, then repo cleanup and README per the 26 Oct–5 Nov
 schedule window. No further sweeps are planned; do not add a fourth
 experiment without discussing it first — scope is closed.
+
+---
+
+## 2026-09-14 — AES-NI check actually run (previously asserted, never executed)
+
+REPORT.md §3 claimed `-mno-aes` "is verified directly, not assumed," citing
+`objdump -d bin/aes.gem5 | grep -ci aesenc`. That command had never been run
+against a committed artifact — `run.log` is gitignored
+(`.gitignore`: `results/raw/*/run.log`), so no record of it existed anywhere
+in the repo. Ran it directly against the binary checked into
+`workloads/bin/aes.gem5`:
+
+```
+$ objdump -d workloads/bin/aes.gem5 | grep -ci aesenc
+0
+```
+
+Result: **0**, as the S-box-table implementation predicts. This confirms
+the `-mno-aes` build flag did what it was supposed to for the actual binary
+E1/E2/E3 ran against, closing the gap between the report's claim and the
+evidence for it.
+
+**Bearing on hypothesis:** none directly (this is a build-correctness check,
+not a performance result) — but it was load-bearing for every AES number in
+the report, since a compiler-emitted `AESENC` would have collapsed the whole
+S-box-load hypothesis into a no-op. REPORT.md §3 now cites this entry instead
+of asserting the check as if already done.
+
+**Next:** none — this closes out the one outstanding unverified claim in the
+report.
+
+---
+
+## 2026-09-14 — Parser fix: `iq_full_events`/`sq_full_events` blank instead of 0 at narrow issue widths
+
+`results/parsed.csv` had 12 blank cells: `iq_full_events` at `iw1` for all
+three workloads, and `sq_full_events` at `iw1`/`iw2`/`iw4` for all three.
+Cause: `lookup()`'s zero-backfill only fires when the stat key is present
+*somewhere else in the same stats.txt* (`known_keys` was scoped per file).
+gem5 25.1 omits a zero-valued scalar from a dump section entirely rather
+than printing `0` — and at narrow issue widths, `rename.IQFullEvents` /
+`rename.SQFullEvents` are genuinely 0 in *both* dump sections of that run's
+file, so the key never appears anywhere in it, and the per-file backfill
+never triggers. Confirmed by grepping the raw files directly, e.g.
+`results/raw/e2_aes_iw1/stats.txt` never contains `rename.IQFullEvents` in
+either section, while `results/raw/e2_aes_iw2/stats.txt` does (value 7998).
+
+Fix (`scripts/parse_stats.py`): read every run's stats.txt in a first pass
+and pool `known_keys` across the *entire batch* being parsed, not just the
+current file, before doing the per-row lookup. A stat that's a real,
+registered gem5 stat for this build appears in at least one run somewhere
+in the batch (e.g. `IQFullEvents` at iw2/4/8); a stat that plain doesn't
+exist in this gem5 version never appears in any run, so it correctly stays
+blank rather than being spuriously zeroed.
+
+Re-ran `python3 scripts/parse_stats.py results/raw/ -o results/parsed.csv`:
+all 12 cells now read `0`; diffed against the prior CSV to confirm no other
+cell changed.
+
+**Bearing on hypothesis:** none — cosmetic data-quality fix, not a new
+result. Flagged because REPORT.md §5 states "AES's ROB-full events are 0 at
+issue width 1–2" — `rob_full_events` itself was never blank (its own stat
+backfilled correctly within-file), so that specific claim was already
+correct, but the adjacent `iq_full_events`/`sq_full_events` blanks were a
+latent correctness risk for any argument that later leans on them.
+
+**Next:** none.

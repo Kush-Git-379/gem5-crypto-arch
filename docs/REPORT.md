@@ -150,9 +150,12 @@ diagnosis).
 **Build flags.** All three binaries are built statically
 (`-static -mno-aes -fno-tree-vectorize`). `-mno-aes` prevents the compiler
 from emitting hardware `AESENC`/`AESDEC`, which would collapse the entire
-S-box-access hypothesis into a no-op; this is verified directly, not
-assumed — `objdump -d bin/aes.gem5 | grep -ci aesenc` must print `0` before
-a run is trusted (see the README build steps). `-fno-tree-vectorize`
+S-box-access hypothesis into a no-op; this is verified directly against the
+committed binary, not assumed —
+`objdump -d workloads/bin/aes.gem5 | grep -ci aesenc` prints `0` (see the
+2026-09-14 entry in [FINDINGS.md](FINDINGS.md) for the run and its output;
+the README documents the check for anyone re-running the build).
+`-fno-tree-vectorize`
 disables autovectorization so the instruction mix reflects each cipher's
 scalar structure rather than a compiler's SIMD rewrite of it; this is a
 scope boundary, not an oversight — a vectorised ASCON is a materially
@@ -169,11 +172,20 @@ required to avoid an assertion failure at issue width 1 — see
 (`7a2b0e413d06c5ce7097104abef3b1d9eaabca91`), X86 ISA, SE (syscall-emulation)
 mode, run inside an Ubuntu VM under VirtualBox on a Windows 11 host (see
 [VM-SETUP.md](VM-SETUP.md) for the host↔VM workflow). Every run uses a fixed
-PRNG seed and a fixed key/nonce, so a given `(workload, config)` pair
-produces identical stats on repeat runs — the only run-to-run variance
+PRNG seed and a fixed key/nonce, so a given `(workload, CPU-parameter set)`
+pair produces identical stats on repeat runs — the only run-to-run variance
 observed across this project was in wall-clock time (VM scheduling noise,
 noted where it matters in FINDINGS.md), never in the simulated statistics
-themselves.
+themselves. This holds only when every CPU parameter is actually identical:
+`results/raw/calib_ascon` and `results/raw/e1_ascon` are both an unmodified
+ASCON baseline run but are *not* the same config in this strict sense — the
+calibration run predates the `backComSize`/`forwardComSize` fix (20, from
+gem5's default 5; see [FINDINGS.md](FINDINGS.md), 2026-08-29) and so differs
+by that one parameter, which is why their `numCycles` differ by 35 out of
+2,165,732 (0.0016%) rather than matching exactly. That gap is a real,
+understood effect of the parameter change, not simulator nondeterminism; it
+is also why the report's own numbers all come from post-fix runs (E1–E3),
+never from `calib_ascon`.
 
 ## 4. E1 — Baseline microarchitectural profile
 
@@ -310,6 +322,24 @@ round or table-based AES, so its ceiling is lower even though it is not
 memory-bound. This confirms "high IPC" and "few loads" are related but not
 identical axes: low load density is necessary for high IPC in this data,
 but the amount of independent work available still sets how high.
+
+One correction to how far that "0.0% insensitivity" claim can be pushed:
+it is a property of *this implementation's* normalisation, not of DES the
+algorithm. This DES implementation does its permutations (initial
+permutation, expansion, P-box) as serial shift/mask/OR chains rather than
+table lookups, so per 1000 blocks it commits 181M instructions and burns
+71M cycles — roughly 10× AES's instruction count and 33× ASCON's cycle
+count for the same N. Its 13.4M L1D accesses (`results/parsed.csv`,
+`e1_des`) are not small in absolute terms — twice AES's 6.6M — but diluted
+across that much larger instruction stream: 0.0739 dcache accesses per
+instruction, versus AES's 0.3547. DES's flat IPC across the L1D-latency
+sweep is consistent with a genuinely low load density, but "exactly 0.0%
+vs. ASCON's 1.6%" is this bit-heavy implementation choice keeping accesses
+sparse relative to an inflated instruction count, not evidence that DES as
+an algorithm is architecturally more latency-tolerant than ASCON. A
+table-driven DES implementation would very plausibly show a different
+load-density profile and a different latency response; this report makes
+no claim about that variant.
 
 For processor design targeting IoT/edge workloads, the implication is
 narrow but concrete for this class of implementation: if a lightweight
