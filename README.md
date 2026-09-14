@@ -4,10 +4,11 @@ Where does ASCON-128's throughput advantage over software AES-128 actually come
 from at the microarchitectural level — and what does the answer say about
 processor design for IoT and edge workloads?
 
-**Status: in progress.** Workloads and tooling are built and the cipher
-implementations pass their published test vectors; no gem5 measurements have
-been taken yet. No number appears here that did not come from a run in
-`results/`.
+**Status: experiments complete, report in draft.** All three experiments
+(E1 baseline, E2 issue-width sweep, E3 L1D-latency sweep) have been run and
+analysed — see [`docs/FINDINGS.md`](docs/FINDINGS.md) for the full log and
+[`docs/REPORT.md`](docs/REPORT.md) for the write-up in progress. No number
+appears here that did not come from a run in `results/`.
 
 ---
 
@@ -89,7 +90,17 @@ DES known-answer) before any performance number is taken — `make check` in
 
 ## Results
 
-_Pending._
+ASCON's IPC advantage over AES (3.08 vs 1.32 at 8-wide issue, E1) traces to
+load *density and dependency-chain position*, not cache misses or per-load
+latency: AES's S-box loads are 21.4% of committed instructions and sit
+back-to-back on the round function's critical path, which saturates the
+ROB/IQ once issue width allows it (E2: AES scales only 2.55× from width 1→8
+vs ASCON's 4.46×) and exposes AES's throughput directly to L1D latency
+despite no individual load being slow (E3: AES loses 42.5% IPC from 1→4
+cycle L1D latency vs 1.6% for ASCON). Full numbers, figures, and the
+falsified intermediate hypothesis are in
+[`docs/FINDINGS.md`](docs/FINDINGS.md); the structured write-up is
+[`docs/REPORT.md`](docs/REPORT.md).
 
 ## Repository
 

@@ -59,32 +59,43 @@ WANTED = {
 
     # Branches
     "branches":        ["system.cpu.commitStats0.numBranches",
+                        "system.cpu.branchPred.lookups_0::total",
                         "system.cpu.branchPred.lookups"],
     "branch_mispred":  ["system.cpu.commit.branchMispredicts",
                         "system.cpu.branchPred.condIncorrect"],
 
     # Instruction mix — the E1 evidence for "AES does more loads"
+    # gem5 25.1 renamed statIssuedInstType0::X -> issuedInstType_0::X.
     "num_load_insts":  ["system.cpu.commitStats0.numLoadInsts",
                         "system.cpu.commit.loads"],
     "num_store_insts": ["system.cpu.commitStats0.numStoreInsts",
                         "system.cpu.commit.stores"],
-    "int_alu_ops":     ["system.cpu.statIssuedInstType0::IntAlu"],
-    "int_mult_ops":    ["system.cpu.statIssuedInstType0::IntMult"],
-    "mem_read_ops":    ["system.cpu.statIssuedInstType0::MemRead"],
-    "mem_write_ops":   ["system.cpu.statIssuedInstType0::MemWrite"],
+    "int_alu_ops":     ["system.cpu.issuedInstType_0::IntAlu",
+                        "system.cpu.statIssuedInstType0::IntAlu"],
+    "int_mult_ops":    ["system.cpu.issuedInstType_0::IntMult",
+                        "system.cpu.statIssuedInstType0::IntMult"],
+    "mem_read_ops":    ["system.cpu.issuedInstType_0::MemRead",
+                        "system.cpu.statIssuedInstType0::MemRead"],
+    "mem_write_ops":   ["system.cpu.issuedInstType_0::MemWrite",
+                        "system.cpu.statIssuedInstType0::MemWrite"],
 
     # Stall attribution — where the mechanism actually shows up.
+    # gem5 25.1 has no per-LQ-full counter (only a combined LSQ-full count
+    # under iew, plus a separate SQFullEvents under rename); lq_full_events
+    # is left as the closest available proxy, not a load-only count.
     "rob_full_events":  ["system.cpu.rename.ROBFullEvents",
                          "system.cpu.rename.ROBFullEvents::total"],
     "iq_full_events":   ["system.cpu.rename.IQFullEvents",
                          "system.cpu.rename.IQFullEvents::total"],
-    "lq_full_events":   ["system.cpu.rename.LQFullEvents",
-                         "system.cpu.rename.LQFullEvents::total"],
+    "lq_full_events":   ["system.cpu.iew.lsqFullEvents",
+                         "system.cpu.rename.LQFullEvents"],
     "sq_full_events":   ["system.cpu.rename.SQFullEvents",
                          "system.cpu.rename.SQFullEvents::total"],
-    "rename_blocked":   ["system.cpu.rename.BlockCycles",
-                         "system.cpu.rename.blockCycles"],
-    "iew_load_to_use":  ["system.cpu.iew.iewIQFullEvents"],
+    "rename_blocked":   ["system.cpu.rename.status::Blocked",
+                         "system.cpu.rename.BlockCycles"],
+    # Direct load-to-use latency distribution (mean cycles) — the load/AES
+    # dependency-chain metric the hypothesis is actually about.
+    "iew_load_to_use":  ["system.cpu.lsq0.loadToUse::mean"],
     "dcache_avg_miss_latency": [
         "system.cpu.dcache.overallAvgMissLatency::total",
         "system.cpu.dcache.overall_avg_miss_latency::total"],
@@ -141,10 +152,25 @@ def pick_roi_section(sections, path):
     return sections[0], True
 
 
-def lookup(section, candidates):
+def lookup(section, candidates, known_keys=None):
+    """Look up the first matching candidate in this dump section.
+
+    gem5 25.1 omits a scalar stat from a dump section entirely when its
+    value is exactly 0 for that interval (SQFullEvents in an ROI section
+    with no SQ stalls, for example), rather than printing "0". If a
+    candidate key is absent here but is a real, registered stat elsewhere
+    in the same stats.txt (known_keys), that means genuinely zero for this
+    section, not "stat doesn't exist in this gem5 build" — return "0"
+    instead of leaving it blank so a real zero isn't mistaken for missing
+    data.
+    """
     for key in candidates:
         if key in section:
             return section[key]
+    if known_keys:
+        for key in candidates:
+            if key in known_keys:
+                return "0"
     return ""
 
 
@@ -212,6 +238,10 @@ def main():
             continue
 
         exp, workload, param = parse_dirname(entry)
+        known_keys = set()
+        for s in sections:
+            known_keys.update(s.keys())
+
         row = {
             "run": entry,
             "experiment": exp,
@@ -221,7 +251,7 @@ def main():
             "n_sections": len(sections),
         }
         for col, candidates in WANTED.items():
-            row[col] = lookup(section, candidates)
+            row[col] = lookup(section, candidates, known_keys)
 
         rows.append(derive(row))
         print(f"  parsed {entry}  (sections={len(sections)}, roi={row['roi_markers']})")

@@ -31,6 +31,7 @@ from m5.objects import (
     BadAddr,
     Cache,
     DerivO3CPU,
+    IQUnit,
     L2XBar,
     MemCtrl,
     Process,
@@ -144,6 +145,12 @@ def build_system(args):
     # ---- CPU: out-of-order, the whole point of the study ----
     cpu = DerivO3CPU()
 
+    # squashWidth is deliberately NOT scaled with the rest: it governs how
+    # fast the pipeline recovers after a misprediction, not steady-state
+    # throughput, and throttling it to 1 alongside a 192-entry ROB overruns
+    # gem5 25.1's internal IEW->commit time-buffer window (asserts in
+    # TimeBuffer<IEWStruct>::valid). Left at its gem5 default (unspecified =
+    # squash instantly in one cycle) for every config in the sweep.
     w = args.issue_width
     cpu.fetchWidth = w
     cpu.decodeWidth = w
@@ -152,10 +159,11 @@ def build_system(args):
     cpu.issueWidth = w
     cpu.wbWidth = w
     cpu.commitWidth = w
-    cpu.squashWidth = w
 
+    cpu.backComSize = 20
+    cpu.forwardComSize = 20
     cpu.numROBEntries = args.rob_size
-    cpu.numIQEntries = args.iq_size
+    cpu.instQueues = IQUnit(numEntries=args.iq_size)
     cpu.LQEntries = args.lq_size
     cpu.SQEntries = args.sq_size
 
