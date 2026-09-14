@@ -1,7 +1,8 @@
 # Where ASCON-128's Advantage Comes From: A Microarchitectural Study
 
 **Kush Mehta** — Institute of Technology, Nirma University
-_All sections drafted; E1/E2/E3 complete — see [FINDINGS.md](FINDINGS.md) for the running log._
+_Complete. E1/E2/E3 run, analysed and written up — see [FINDINGS.md](FINDINGS.md)
+for the dated log, including one intermediate hypothesis the data falsified._
 
 > **Drafting rule:** every number in this document must trace to a run in
 > `results/`, cited by path. Nothing estimated, remembered, or carried over from
@@ -199,7 +200,11 @@ why). N = 1000 blocks × 64 B. Raw: `results/raw/e1_{ascon,aes,des}/stats.txt`.
 | AES-128 | 1.325 | 0.0001% | 0.0012% | 0.40% | 21.40% | 178,876 | 3,076,715 | 0 |
 | DES | 2.547 | 0.0003% | 0.0001% | 3.19% | 6.99% | 44,980 | 17,031 | 0 |
 
-Figures: `fig_e1_ipc.png`, `fig_e1_mix.png`, `fig_e1_stalls.png`
+![IPC by workload at the 8-wide baseline](../results/figures/fig_e1_ipc.png)
+
+![Instruction mix: load, store and other fractions](../results/figures/fig_e1_mix.png)
+
+![Structure-full stall attribution](../results/figures/fig_e1_stalls.png)
 
 (LQ-full is 0 across the board because gem5 25.1 exposes no per-LQ-full
 counter at this granularity — `lq_full_events` is the closest available
@@ -238,8 +243,9 @@ window while anything is in flight.
 
 Config as E1, varying only issue width (fetch/decode/rename/dispatch/issue/
 wb/commit scaled together; squash width and `backComSize`/`forwardComSize`
-fixed). Raw: `results/raw/e2_{ascon,aes,des}_iw{1,2,4,8}/stats.txt`. Figure:
-`fig_e2_issue_width.png`
+fixed). Raw: `results/raw/e2_{ascon,aes,des}_iw{1,2,4,8}/stats.txt`.
+
+![IPC versus issue width, 1 to 8](../results/figures/fig_e2_issue_width.png)
 
 | Issue width | ASCON IPC | AES IPC | DES IPC |
 |---|---|---|---|
@@ -267,7 +273,9 @@ predicted, and it does not by itself distinguish load *latency* from load
 
 Config as E1 (issue width 8), varying only L1D tag+data+response latency
 together. Raw: `results/raw/e3_{ascon,aes,des}_lat{1,2,3,4}/stats.txt`.
-Figure: `fig_e3_l1d_latency.png`
+Figure below.
+
+![IPC versus L1D access latency, 1 to 4 cycles](../results/figures/fig_e3_l1d_latency.png)
 
 | L1D latency (cyc) | ASCON IPC | AES IPC | DES IPC |
 |---|---|---|---|

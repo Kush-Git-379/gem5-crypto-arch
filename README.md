@@ -4,11 +4,12 @@ Where does ASCON-128's throughput advantage over software AES-128 actually come
 from at the microarchitectural level — and what does the answer say about
 processor design for IoT and edge workloads?
 
-**Status: experiments complete, report in draft.** All three experiments
-(E1 baseline, E2 issue-width sweep, E3 L1D-latency sweep) have been run and
-analysed — see [`docs/FINDINGS.md`](docs/FINDINGS.md) for the full log and
-[`docs/REPORT.md`](docs/REPORT.md) for the write-up in progress. No number
-appears here that did not come from a run in `results/`.
+**Status: complete.** All three experiments (E1 baseline, E2 issue-width sweep,
+E3 L1D-latency sweep) have been run, analysed and written up — see
+[`docs/REPORT.md`](docs/REPORT.md) for the findings and
+[`docs/FINDINGS.md`](docs/FINDINGS.md) for the dated log, including one
+intermediate hypothesis the data falsified. No number appears here that did not
+come from a run in `results/`.
 
 ---
 
@@ -90,17 +91,40 @@ DES known-answer) before any performance number is taken — `make check` in
 
 ## Results
 
-ASCON's IPC advantage over AES (3.08 vs 1.32 at 8-wide issue, E1) traces to
-load *density and dependency-chain position*, not cache misses or per-load
-latency: AES's S-box loads are 21.4% of committed instructions and sit
-back-to-back on the round function's critical path, which saturates the
-ROB/IQ once issue width allows it (E2: AES scales only 2.55× from width 1→8
-vs ASCON's 4.46×) and exposes AES's throughput directly to L1D latency
-despite no individual load being slow (E3: AES loses 42.5% IPC from 1→4
-cycle L1D latency vs 1.6% for ASCON). Full numbers, figures, and the
-falsified intermediate hypothesis are in
-[`docs/FINDINGS.md`](docs/FINDINGS.md); the structured write-up is
-[`docs/REPORT.md`](docs/REPORT.md).
+**The mechanism is load density and dependency-chain position — not cache
+misses, and not per-load latency.**
+
+At the 8-wide baseline, all three workloads have near-zero L1D miss rates and
+near-identical per-load latency (~3 cycles). What separates them is how many
+loads there are and where they sit:
+
+| Workload | IPC | Load frac | L1D miss | IPC scaling 1→8 wide | IPC change, L1D 1→4 cyc |
+|---|---|---|---|---|---|
+| **ASCON-128** | **3.079** | 5.3% | 0.0035% | **4.46×** | **−1.6%** |
+| AES-128 | 1.325 | 21.4% | 0.0001% | 2.55× | −42.5% |
+| DES | 2.547 | 7.0% | 0.0003% | 4.08× | −0.0% |
+
+AES commits a load on 21.4% of instructions — 4× ASCON's rate — and those
+S-box lookups sit back-to-back on the round function's critical path with too
+little independent work to hide them. That structure produces 178,876 ROB-full
+and 3,076,715 IQ-full stall events for AES against **3 of each** for ASCON; it
+caps AES's issue-width scaling at 2.55× where ASCON reaches 4.46×; and it
+leaves AES's throughput directly exposed to L1D latency even though no
+individual load is slow.
+
+![IPC versus issue width](results/figures/fig_e2_issue_width.png)
+
+![IPC versus L1D latency](results/figures/fig_e3_l1d_latency.png)
+
+The hypothesis holds end to end, with one honest correction: it originally
+named load *latency* as the serialising factor, but per-load latency turned out
+to be workload-independent. The real driver is load *density and chain
+position*; latency-sensitivity is a downstream symptom of that structure. An
+intermediate prediction made after E1 — that AES would prove latency-*in*sensitive
+— was falsified by E3 and is recorded as such in
+[`docs/FINDINGS.md`](docs/FINDINGS.md) rather than edited out.
+
+Full analysis, figures and threats to validity: [`docs/REPORT.md`](docs/REPORT.md).
 
 ## Repository
 
