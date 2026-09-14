@@ -1,7 +1,7 @@
 # Where ASCON-128's Advantage Comes From: A Microarchitectural Study
 
 **Kush Mehta** — Institute of Technology, Nirma University
-_Draft. E1/E2/E3 complete — see [FINDINGS.md](FINDINGS.md) for the running log._
+_All sections drafted; E1/E2/E3 complete — see [FINDINGS.md](FINDINGS.md) for the running log._
 
 > **Drafting rule:** every number in this document must trace to a run in
 > `results/`, cited by path. Nothing estimated, remembered, or carried over from
@@ -39,41 +39,141 @@ which latency-sensitivity is a downstream symptom, not the cause itself.
 
 ## 1. Introduction
 
-- The two prior projects and the tension between them.
-- What each established and what neither did.
-- Scope statement: this explains the gap between *these* implementations under
-  *this* core model. It does not decompose the earlier 78× AES-GCM figure, and
-  the reasons why (GHASH, ctypes overhead) belong here explicitly.
+A January 2026 wall-clock benchmark loaded ASCON-128 and AES-GCM as compiled
+DLLs through Python `ctypes` and timed them across 5,000 IoT payloads:
+ASCON-128 ran 78× faster than AES-GCM and 12× faster than DES. That number
+establishes *that* ASCON wins decisively, but says nothing about *why* — it
+compares a stream cipher's core permutation against a mode (GCM) that adds
+GHASH authentication on top of a block cipher, timed through an FFI boundary
+that folds call overhead into the result. It is not a clean cipher-versus-
+cipher comparison, and it cannot be decomposed into a mechanism after the
+fact.
 
-## 1. Introduction
+A February 2026 gem5 study went looking for a memory-side explanation and
+ruled one out: software AES-128's L1D miss rate stayed flat at 0.14% from a
+4 kB to a 64 kB cache, because its 256-byte S-box fits comfortably even in
+the smallest cache tested. The study concluded AES's bottleneck "lies in
+instruction execution, not memory capacity" — but that conclusion is a
+negative result. It says where the answer isn't; it does not say what it
+is. It was also run on `TimingSimpleCPU`, a model with no pipeline, so it
+could not have supported any claim about instruction-level parallelism even
+if it had tried to make one.
 
-- The two prior projects and the tension between them.
-- What each established and what neither did.
-- Scope statement: this explains the gap between *these* implementations under
-  *this* core model. It does not decompose the earlier 78× AES-GCM figure, and
-  the reasons why (GHASH, ctypes overhead) belong here explicitly.
+This project's scope is narrower than either prior one, deliberately: given
+two ciphers compiled the same way, run on the same simulated out-of-order
+core, in the same mode, with setup and teardown excluded by ROI markers —
+where does the remaining throughput gap come from? It does not attempt to
+decompose the original 78× figure; that number is AES-**GCM**, not AES, and
+was measured through a different instrumentation path entirely. What
+follows explains the mechanism behind a smaller, honestly-measured gap
+between ASCON, AES-CTR, and DES-CTR under `DerivO3CPU`, and argues that
+mechanism is the same one responsible for the wall-clock result, even
+though it does not reproduce that result's magnitude.
 
 ## 2. Background
 
-- ASCON-128: sponge construction, the 5×64-bit state, the ARX permutation, why
-  the S-box lines are mutually independent.
-- Software AES-128: S-box substitution as memory access; why the 256-byte table
-  makes it cache-insensitive but not memory-independent.
-- DES: bit permutations as serial shift/mask/OR chains — a third profile that is
-  neither of the above.
-- Why `DerivO3CPU` and not `TimingSimpleCPU`. This is the methodological spine
-  of the project and deserves its own subsection.
+**ASCON-128.** A sponge-construction AEAD cipher: a 320-bit state as five
+64-bit words, permuted by a round function built entirely from XOR, AND,
+NOT and bitwise rotations (an ARX-style construction) — no table lookups
+anywhere in the permutation. The round's five S-box "lines" operate on
+mutually independent combinations of the state words, so a wide out-of-order
+core has, in principle, five independent chains of work to interleave per
+round rather than one serial chain.
+
+**Software AES-128.** The reference "-mno-aes" build implements SubBytes via
+a 256-byte lookup table rather than the hardware `AESENC` instruction. Every
+byte of every round's state is substituted via a load from that table. A
+256-byte table fits in L1D at any realistic cache size — which is exactly
+what the Feb 2026 study measured — so the table lookups essentially never
+miss. But "essentially never misses" does not mean "free": each lookup is
+still a load instruction, with a dependency (the index) computed from the
+previous round and a result consumed by the next, occupying a load queue
+entry and an L1D access even on a hit. Cache-insensitive is not the same
+claim as memory-independent, and Section 4 (E1) is precisely the evidence
+for the difference.
+
+**DES.** Included as a third, structurally distinct profile rather than a
+second confirmation of AES. This implementation performs its bit
+permutations (initial permutation, expansion, P-box) as serial chains of
+shift/mask/OR operations on general-purpose registers rather than via
+lookup tables — so, like ASCON, it does little memory access, but unlike
+ASCON its permutation is a long serial dependency chain rather than several
+independent ones. DES tests whether "few loads" alone predicts high IPC, or
+whether the amount of *independent* work available also matters — Section
+7 (Discussion) addresses this directly.
+
+**Why `DerivO3CPU`, not `TimingSimpleCPU`.** This substitution is the
+methodological spine of the project. `TimingSimpleCPU` executes one
+instruction at a time with no reorder buffer, no issue queue, and no
+instruction-level parallelism of any kind; an IPC number from it can speak
+to memory latency but cannot speak to whether a workload's structure allows
+independent instructions to overlap. `DerivO3CPU` models fetch, decode,
+rename, an issue queue, out-of-order issue, and a reorder buffer — the
+minimum machinery needed to ask whether ASCON's structural claim (mutually
+independent S-box lines) actually translates into more instructions in
+flight than AES's serial load-dependent chain. Every experiment in this
+report is only meaningful because of this choice.
 
 ## 3. Method
 
-- The shared harness: identical buffers, PRNG, key/nonce, checksum; ROI markers.
-- Mode choice (CTR for AES/DES, native AEAD for ASCON) and why.
-- Correctness: the test vectors, cited. Note the round-constant bug found in the
-  reference implementation and that it is microarchitecturally neutral.
-- Build flags, especially `-mno-aes` and `-fno-tree-vectorize`, and the
-  `objdump` check that verifies the former took effect.
-- Baseline O3 configuration table.
-- Simulator version, host, and the fact that runs are deterministic.
+**Shared harness.** All three workloads (`workloads/ascon.c`, `aes.c`,
+`des.c`) share one harness (`workloads/harness.h`): identical input buffers,
+the same deterministic PRNG seed, the same fixed key and nonce/IV, and the
+same output checksum so correctness can be spot-checked alongside
+performance. `m5_reset_stats()`/`m5_dump_stats()` bracket the encryption
+loop so process startup (static linking, page faults, PRNG seeding) and
+teardown fall outside the measured region — every stat quoted in Sections
+4–6 is from the ROI-only dump section (`roi_markers=yes` in
+`results/parsed.csv`).
+
+**Mode choice.** AES and DES both run in CTR mode; ASCON runs in its native
+AEAD mode. All three are therefore keystream-style stream processing rather
+than one workload paying for a mode (e.g. CBC's serial chaining) that the
+others don't. AES-**GCM** is deliberately excluded from this project's
+measurements — its GHASH step is a separate authentication computation
+over Galois-field multiplication that would measure GHASH arithmetic, not
+the S-box access pattern the hypothesis is actually about.
+
+**Correctness.** All three implementations are checked against published
+test vectors before any performance number is taken (`make check` in
+`workloads/`): ASCON's NIST LWC known-answer tests, AES against FIPS-197,
+DES against FIPS-46-3. `reference/ascon.c` — Kush's original January 2026
+ASCON-128 implementation — is kept unmodified as the artifact of that
+earlier project; `workloads/ascon.c` derives from it but fixes a
+round-constant bug in which the 6-round permutation was using the
+constants for the 12-round variant. The fix changes output correctness,
+not the instruction mix or memory-access pattern, so it is
+microarchitecturally neutral with respect to every claim in this report
+(see the 2026-08-29 entry in [FINDINGS.md](FINDINGS.md) for the full
+diagnosis).
+
+**Build flags.** All three binaries are built statically
+(`-static -mno-aes -fno-tree-vectorize`). `-mno-aes` prevents the compiler
+from emitting hardware `AESENC`/`AESDEC`, which would collapse the entire
+S-box-access hypothesis into a no-op; this is verified directly, not
+assumed — `objdump -d bin/aes.gem5 | grep -ci aesenc` must print `0` before
+a run is trusted (see the README build steps). `-fno-tree-vectorize`
+disables autovectorization so the instruction mix reflects each cipher's
+scalar structure rather than a compiler's SIMD rewrite of it; this is a
+scope boundary, not an oversight — a vectorised ASCON is a materially
+different, and unaddressed, question (see Threats to Validity, Section 7).
+
+**Baseline O3 configuration.** `DerivO3CPU`, issue width 8 (fetch through
+commit), 192-entry ROB, 64-entry IQ, 32-entry LQ/SQ, 32 kB L1D at 2-cycle
+latency, `backComSize`/`forwardComSize` = 20 (raised from gem5's default 5;
+required to avoid an assertion failure at issue width 1 — see
+[FINDINGS.md](FINDINGS.md), 2026-08-29). The full parameterisation lives in
+`configs/o3_crypto.py`.
+
+**Simulator and determinism.** gem5 v25.1.0.0
+(`7a2b0e413d06c5ce7097104abef3b1d9eaabca91`), X86 ISA, SE (syscall-emulation)
+mode, run inside an Ubuntu VM under VirtualBox on a Windows 11 host (see
+[VM-SETUP.md](VM-SETUP.md) for the host↔VM workflow). Every run uses a fixed
+PRNG seed and a fixed key/nonce, so a given `(workload, config)` pair
+produces identical stats on repeat runs — the only run-to-run variance
+observed across this project was in wall-clock time (VM scheduling noise,
+noted where it matters in FINDINGS.md), never in the simulated statistics
+themselves.
 
 ## 4. E1 — Baseline microarchitectural profile
 
